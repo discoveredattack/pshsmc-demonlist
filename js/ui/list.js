@@ -250,13 +250,13 @@ export function processLiveDecayFilterAndNews() {
           textEasier = String(easierLevel.name || easierLevel.levelName || 'Unnamed');
         }
 
-        let placementText = `below <strong>${textHarder}</strong> and above <strong>${textEasier}</strong>`;
+        let placementText = `below <strong>${textHarder} and above ${textEasier}</strong>`;
         if (textHarder === "None" && textEasier === "None") {
           placementText = `as the only level in this category`;
         } else if (textHarder === "None") {
-          placementText = `at the very top of the list, above <strong>${textEasier}</strong>`;
+          placementText = `at the very top of the list, above ${textEasier}</strong>`;
         } else if (textEasier === "None") {
-          placementText = `below <strong>${textHarder}</strong>, at the bottom of the list`;
+          placementText = `below <strong>${textHarder}, at the bottom of the list`;
         }
 
         const lookKey = targetName.toLowerCase();
