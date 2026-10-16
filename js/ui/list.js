@@ -131,45 +131,185 @@ window.addEventListener('popstate', (event) => {
   renderLevelsDashboard();
 });
 
-// --- NEWS ENGINE ---
 export function processLiveDecayFilterAndNews() {
   const feed = document.getElementById('liveChangelogFeed');
   if (!feed) return;
 
   const now = new Date();
-  const targetTodayStr = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
+  const targetTodayStr =
+    now.getFullYear() + '-' +
+    String(now.getMonth() + 1).padStart(2, '0') + '-' +
+    String(now.getDate()).padStart(2, '0');
 
   let validNews = [];
 
   const checkIsToday = (dateStr) => {
     if (!dateStr) return { isToday: false, sortTime: 0 };
-    let itemDayStr = "";
+
+    let itemDayStr = '';
     const strMatch = String(dateStr).match(/(\d{4}-\d{2}-\d{2})/);
-    
+
     if (strMatch) {
       itemDayStr = strMatch[1];
     } else {
       const parsedDate = new Date(dateStr);
-      if (isNaN(parsedDate.getTime())) return { isToday: false, sortTime: 0 };
-      itemDayStr = parsedDate.getFullYear() + '-' + String(parsedDate.getMonth() + 1).padStart(2, '0') + '-' + String(parsedDate.getDate()).padStart(2, '0');
+
+      if (isNaN(parsedDate.getTime())) {
+        return { isToday: false, sortTime: 0 };
+      }
+
+      itemDayStr =
+        parsedDate.getFullYear() + '-' +
+        String(parsedDate.getMonth() + 1).padStart(2, '0') + '-' +
+        String(parsedDate.getDate()).padStart(2, '0');
     }
-    
+
     const cleanDateStr = String(dateStr).replace(/[A-Za-z]+$/, '').trim();
     const sortDateObj = new Date(cleanDateStr);
-    const sortTimestamp = isNaN(sortDateObj.getTime()) ? Date.now() : sortDateObj.getTime();
+    const sortTimestamp = isNaN(sortDateObj.getTime())
+      ? Date.now()
+      : sortDateObj.getTime();
 
-    return { isToday: (itemDayStr === targetTodayStr), sortTime: sortTimestamp };
+    return {
+      isToday: itemDayStr === targetTodayStr,
+      sortTime: sortTimestamp
+    };
   };
 
+  // ----------------------------------------------------------
+  // DETECT REMOVED CHALLENGES
+  // ----------------------------------------------------------
+
+  const currentLevelSnapshot = uiState.allLevels
+    .map(lvl => ({
+      name: String(lvl.name || lvl.levelName || '').trim(),
+      listType: getNormalizedListType(lvl)
+    }))
+    .filter(lvl => lvl.name);
+
+  const snapshotStorageKey = 'pshsNewsPreviousLevelSnapshot';
+  const removalsStorageKey = 'pshsNewsRemovedChallenges';
+
+  let previousSnapshot = [];
+  let storedRemovalData = {};
+
+  try {
+    previousSnapshot = JSON.parse(
+      window.localStorage.getItem(snapshotStorageKey) || '[]'
+    );
+
+    if (!Array.isArray(previousSnapshot)) {
+      previousSnapshot = [];
+    }
+
+    storedRemovalData = JSON.parse(
+      window.localStorage.getItem(removalsStorageKey) || '{}'
+    );
+
+    if (
+      !storedRemovalData ||
+      typeof storedRemovalData !== 'object' ||
+      Array.isArray(storedRemovalData)
+    ) {
+      storedRemovalData = {};
+    }
+  } catch (error) {
+    previousSnapshot = [];
+    storedRemovalData = {};
+  }
+
+  // Keep announcements from today only.
+  Object.keys(storedRemovalData).forEach(dateKey => {
+    if (dateKey !== targetTodayStr) {
+      delete storedRemovalData[dateKey];
+    }
+  });
+
+  const currentChallengeNames = new Set(
+    currentLevelSnapshot
+      .filter(lvl => lvl.listType === 'challenge')
+      .map(lvl => lvl.name.toLowerCase())
+  );
+
+  const todaysRemovedChallenges =
+    Array.isArray(storedRemovalData[targetTodayStr])
+      ? storedRemovalData[targetTodayStr]
+      : [];
+
+  const alreadyNotifiedRemoved = new Set(
+    todaysRemovedChallenges.map(
+      item => String(item.name || '').toLowerCase()
+    )
+  );
+
+  // Compare against the previously saved list.
+  // The first visit establishes the baseline.
+  if (previousSnapshot.length > 0) {
+    previousSnapshot.forEach(oldLevel => {
+      const oldName = String(
+        oldLevel.name || oldLevel.levelName || ''
+      ).trim();
+
+      const oldType = oldLevel.listType || oldLevel.type;
+
+      if (
+        oldName &&
+        String(oldType).toLowerCase() === 'challenge' &&
+        !currentChallengeNames.has(oldName.toLowerCase()) &&
+        !alreadyNotifiedRemoved.has(oldName.toLowerCase())
+      ) {
+        todaysRemovedChallenges.push({ name: oldName });
+        alreadyNotifiedRemoved.add(oldName.toLowerCase());
+      }
+    });
+  }
+
+  storedRemovalData[targetTodayStr] = todaysRemovedChallenges;
+
+  try {
+    window.localStorage.setItem(
+      snapshotStorageKey,
+      JSON.stringify(currentLevelSnapshot)
+    );
+
+    window.localStorage.setItem(
+      removalsStorageKey,
+      JSON.stringify(storedRemovalData)
+    );
+  } catch (error) {
+    // Keep rendering the feed if browser storage is unavailable.
+  }
+
+  // Add removal announcements to today's news.
+  todaysRemovedChallenges.forEach(item => {
+    validNews.push({
+      type: 'removed',
+      title: String(item.name || 'Unnamed Challenge'),
+      listType: 'challenge',
+      sortTime: now.getTime()
+    });
+  });
+
+  // ----------------------------------------------------------
+  // EXISTING PLACEMENT NEWS LOGIC
+  // ----------------------------------------------------------
+
   const categories = {};
+
   uiState.allLevels.forEach(lvl => {
     const cat = getNormalizedListType(lvl);
-    if (!categories[cat]) categories[cat] = [];
+
+    if (!categories[cat]) {
+      categories[cat] = [];
+    }
+
     categories[cat].push({ ...lvl });
   });
 
   Object.keys(categories).forEach(cat => {
-    categories[cat].sort((a, b) => parseInt(a.rank || 999) - parseInt(b.rank || 999));
+    categories[cat].sort(
+      (a, b) => parseInt(a.rank || 999) - parseInt(b.rank || 999)
+    );
   });
 
   const exactPushedExtendedMap = {};
@@ -178,157 +318,290 @@ export function processLiveDecayFilterAndNews() {
   Object.keys(categories).forEach(cat => {
     let currentSimList = [...categories[cat]];
 
-    // Fast lookup: level name -> current index
     const indexMap = new Map(
       currentSimList.map((lvl, index) => [
-        String(lvl.name || lvl.levelName || "").trim().toLowerCase(),
+        String(lvl.name || lvl.levelName || '')
+          .trim()
+          .toLowerCase(),
         index
-        ])
-      );
+      ])
+    );
 
-    let todaysAdditions = currentSimList.filter(l => {
-      return checkIsToday(l.createdDate || l.date || l.publishDate || l.added || l.timestamp).isToday;
-    }).sort((a, b) => {
-      const timeA = checkIsToday(a.createdDate || a.date || a.publishDate || a.added || a.timestamp).sortTime;
-      const timeB = checkIsToday(b.createdDate || b.date || b.publishDate || b.added || b.timestamp).sortTime;
-      return timeB - timeA; 
-    });
+    const todaysAdditions = currentSimList
+      .filter(lvl =>
+        checkIsToday(
+          lvl.createdDate ||
+          lvl.date ||
+          lvl.publishDate ||
+          lvl.added ||
+          lvl.timestamp
+        ).isToday
+      )
+      .sort((a, b) => {
+        const timeA = checkIsToday(
+          a.createdDate ||
+          a.date ||
+          a.publishDate ||
+          a.added ||
+          a.timestamp
+        ).sortTime;
+
+        const timeB = checkIsToday(
+          b.createdDate ||
+          b.date ||
+          b.publishDate ||
+          b.added ||
+          b.timestamp
+        ).sortTime;
+
+        return timeB - timeA;
+      });
 
     todaysAdditions.forEach(addition => {
-      const addName = String(addition.name || addition.levelName || "").trim().toLowerCase();
-      
+      const addName = String(
+        addition.name || addition.levelName || ''
+      ).trim().toLowerCase();
+
       const idx = indexMap.get(addName);
       if (idx === undefined) return;
 
-      const placementRank = idx + 1; 
+      const placementRank = idx + 1;
 
       if (placementRank <= 75 && currentSimList.length > 75) {
-        const pushedLvl = currentSimList[75]; 
+        const pushedLvl = currentSimList[75];
+
         if (pushedLvl) {
-          exactPushedExtendedMap[addName] = pushedLvl.name || pushedLvl.levelName || "Unnamed";
+          exactPushedExtendedMap[addName] =
+            pushedLvl.name || pushedLvl.levelName || 'Unnamed';
         }
-      } else if (placementRank > 75 && placementRank <= 150 && currentSimList.length > 150) {
+      } else if (
+        placementRank > 75 &&
+        placementRank <= 150 &&
+        currentSimList.length > 150
+      ) {
         const pushedLvl = currentSimList[150];
+
         if (pushedLvl) {
-          exactPushedLegacyMap[addName] = pushedLvl.name || pushedLvl.levelName || "Unnamed";
+          exactPushedLegacyMap[addName] =
+            pushedLvl.name || pushedLvl.levelName || 'Unnamed';
         }
       }
 
       currentSimList.splice(idx, 1);
       indexMap.delete(addName);
 
-      // Update indices after the removed element
       for (let i = idx; i < currentSimList.length; i++) {
         indexMap.set(
-          String(currentSimList[i].name || currentSimList[i].levelName || "")
-            .trim()
-            .toLowerCase(),
+          String(
+            currentSimList[i].name ||
+            currentSimList[i].levelName ||
+            ''
+          ).trim().toLowerCase(),
           i
         );
       }
     });
   });
 
+  // ----------------------------------------------------------
+  // BUILD PLACEMENT AND VICTOR NEWS
+  // ----------------------------------------------------------
+
   uiState.allLevels.forEach(lvl => {
     const currentRank = parseInt(lvl.rank || 999, 10);
-    const targetName = String(lvl.name || lvl.levelName || "Unnamed Level").trim();
+
+    const targetName = String(
+      lvl.name || lvl.levelName || 'Unnamed Level'
+    ).trim();
+
     const listCategory = getNormalizedListType(lvl);
     const categorySortedLevels = categories[listCategory];
-    const levelDateData = checkIsToday(lvl.createdDate || lvl.date || lvl.publishDate || lvl.added || lvl.timestamp);
-    
+
+    const levelDateData = checkIsToday(
+      lvl.createdDate ||
+      lvl.date ||
+      lvl.publishDate ||
+      lvl.added ||
+      lvl.timestamp
+    );
+
     if (levelDateData.isToday) {
-        const indexInSorted = categorySortedLevels.findIndex(item => String(item.name || item.levelName || "Unnamed Level").trim() === targetName);
-        let textHarder = "None"; 
-        let textEasier = "None"; 
+      const indexInSorted = categorySortedLevels.findIndex(
+        item =>
+          String(
+            item.name || item.levelName || 'Unnamed Level'
+          ).trim() === targetName
+      );
 
-        if (indexInSorted > 0) {
-          const harderLevel = categorySortedLevels[indexInSorted - 1];
-          textHarder = String(harderLevel.name || harderLevel.levelName || 'Unnamed');
-        }
-        if (indexInSorted !== -1 && indexInSorted < categorySortedLevels.length - 1) {
-          const easierLevel = categorySortedLevels[indexInSorted + 1];
-          textEasier = String(easierLevel.name || easierLevel.levelName || 'Unnamed');
-        }
+      let textHarder = 'None';
+      let textEasier = 'None';
 
-        let placementText = `below ${textHarder} and above ${textEasier}`;
-        if (textHarder === "None" && textEasier === "None") {
-          placementText = `as the only level in this category`;
-        } else if (textHarder === "None") {
-          placementText = `at the very top of the list, above ${textEasier}`;
-        } else if (textEasier === "None") {
-          placementText = `below ${textHarder}, at the bottom of the list`;
-        }
+      if (indexInSorted > 0) {
+        const harderLevel = categorySortedLevels[indexInSorted - 1];
 
-        const lookKey = targetName.toLowerCase();
-        if (exactPushedExtendedMap[lookKey]) {
-            placementText += `, this pushes ${exactPushedExtendedMap[lookKey]} into the Extended List`; 
-        } else if (exactPushedLegacyMap[lookKey]) {
-            placementText += `, this pushes ${exactPushedLegacyMap[lookKey]} into the Legacy List`; 
-        }
+        textHarder = String(
+          harderLevel.name || harderLevel.levelName || 'Unnamed'
+        );
+      }
 
-        validNews.push({ type: 'placement', title: targetName, rank: currentRank, listType: listCategory, placementText, sortTime: levelDateData.sortTime });
+      if (
+        indexInSorted !== -1 &&
+        indexInSorted < categorySortedLevels.length - 1
+      ) {
+        const easierLevel = categorySortedLevels[indexInSorted + 1];
+
+        textEasier = String(
+          easierLevel.name || easierLevel.levelName || 'Unnamed'
+        );
+      }
+
+      let placementText =
+        `below ${textHarder} and above ${textEasier}`;
+
+      if (textHarder === 'None' && textEasier === 'None') {
+        placementText = 'as the only level in this category';
+      } else if (textHarder === 'None') {
+        placementText =
+          `at the very top of the list, above ${textEasier}`;
+      } else if (textEasier === 'None') {
+        placementText =
+          `below ${textHarder}, at the bottom of the list`;
+      }
+
+      const lookKey = targetName.toLowerCase();
+
+      if (exactPushedExtendedMap[lookKey]) {
+        placementText +=
+          `, this pushes ${exactPushedExtendedMap[lookKey]} into the Extended List`;
+      } else if (exactPushedLegacyMap[lookKey]) {
+        placementText +=
+          `, this pushes ${exactPushedLegacyMap[lookKey]} into the Legacy List`;
+      }
+
+      validNews.push({
+        type: 'placement',
+        title: targetName,
+        rank: currentRank,
+        listType: listCategory,
+        placementText,
+        sortTime: levelDateData.sortTime
+      });
     }
 
     const records = getRecordList(lvl);
-    const verifierName = String(lvl.verifier || "Unknown").trim().toLowerCase();
+    const verifierName = String(
+      lvl.verifier || 'Unknown'
+    ).trim().toLowerCase();
 
     records.forEach(rec => {
-        const rawUsername = String(rec.username || rec.name || rec.player || rec.user || "Someone").trim();
-        if (rawUsername.toLowerCase() === verifierName) return;
+      const rawUsername = String(
+        rec.username ||
+        rec.name ||
+        rec.player ||
+        rec.user ||
+        'Someone'
+      ).trim();
 
-        const recDateData = checkIsToday(rec.date || rec.timestamp || rec.achieved);
-        if (recDateData.isToday) {
-            validNews.push({ type: 'victor', title: targetName, listType: listCategory, username: rawUsername, sortTime: recDateData.sortTime });
-        }
+      if (rawUsername.toLowerCase() === verifierName) {
+        return;
+      }
+
+      const recDateData = checkIsToday(
+        rec.date || rec.timestamp || rec.achieved
+      );
+
+      if (recDateData.isToday) {
+        validNews.push({
+          type: 'victor',
+          title: targetName,
+          listType: listCategory,
+          username: rawUsername,
+          sortTime: recDateData.sortTime
+        });
+      }
     });
   });
 
   validNews.sort((a, b) => b.sortTime - a.sortTime);
 
+  // ----------------------------------------------------------
+  // RENDER NEWS FEED
+  // ----------------------------------------------------------
+
   if (validNews.length === 0) {
     feed.replaceChildren();
+
     const empty = document.createElement('div');
     empty.style.color = '#64748b';
     empty.style.padding = '16px';
     empty.style.fontSize = '12px';
     empty.style.textAlign = 'center';
     empty.style.fontStyle = 'italic';
-    empty.textContent = `No changes detected for today (${targetTodayStr}).`;
+    empty.textContent =
+      `No changes detected for today (${targetTodayStr}).`;
+
     feed.appendChild(empty);
     return;
   }
 
   feed.replaceChildren();
+
   const container = document.createElement('div');
   container.style.marginBottom = '14px';
 
-  const displayDate = now.toLocaleDateString('en-GB', { day: '2-digit', month: 'long', year: 'numeric' });
+  const displayDate = now.toLocaleDateString('en-GB', {
+    day: '2-digit',
+    month: 'long',
+    year: 'numeric'
+  });
+
   const dateEl = document.createElement('div');
-  dateEl.style.cssText = 'font-size:11px; color:var(--accent); font-weight:700; text-transform:uppercase; margin-bottom:6px; letter-spacing:0.5px;';
+  dateEl.style.cssText =
+    'font-size:11px; color:var(--accent); font-weight:700; ' +
+    'text-transform:uppercase; margin-bottom:6px; letter-spacing:0.5px;';
+
   dateEl.textContent = displayDate;
   container.appendChild(dateEl);
 
   validNews.forEach(item => {
     let badgeText = 'DEMON LIST';
     let badgeColor = 'var(--accent)';
-    if (item.listType === 'challenge') { badgeText = 'CHALLENGE LIST'; badgeColor = '#f59e0b'; }
-    else if (item.listType === 'platformer') { badgeText = 'PLATFORMER LIST'; badgeColor = '#3b82f6'; }
+
+    if (item.listType === 'challenge') {
+      badgeText = 'CHALLENGE LIST';
+      badgeColor = '#f59e0b';
+    } else if (item.listType === 'platformer') {
+      badgeText = 'PLATFORMER LIST';
+      badgeColor = '#3b82f6';
+    }
 
     const itemEl = document.createElement('div');
     itemEl.className = 'changelog-item';
     itemEl.style.cursor = 'pointer';
     itemEl.title = 'Click to view level';
-    itemEl.addEventListener('click', () => openLevelFromNews(item.title));
+
+    if (item.type !== 'removed') {
+      itemEl.addEventListener('click', () => {
+        openLevelFromNews(item.title);
+      });
+    } else {
+      itemEl.style.cursor = 'default';
+      itemEl.title = 'Challenge removed from the list';
+    }
 
     const top = document.createElement('div');
-    top.style.cssText = 'display:flex; justify-content:space-between; font-size:13px; margin-bottom:3px; gap:10px;';
+    top.style.cssText =
+      'display:flex; justify-content:space-between; font-size:13px; ' +
+      'margin-bottom:3px; gap:10px;';
 
     const titleEl = document.createElement('span');
     titleEl.className = 'changelog-item-title';
     titleEl.textContent = item.title;
 
     const badge = document.createElement('span');
-    badge.style.cssText = `font-size:11px; white-space:nowrap; font-weight:700; color:${badgeColor};`;
+    badge.style.cssText =
+      `font-size:11px; white-space:nowrap; font-weight:700; color:${badgeColor};`;
+
     badge.textContent = badgeText;
     top.append(titleEl, badge);
 
@@ -337,18 +610,31 @@ export function processLiveDecayFilterAndNews() {
 
     if (item.type === 'placement') {
       desc.append(document.createTextNode('Placed at '));
+
       const rank = document.createElement('strong');
       rank.className = 'news-rank';
       rank.textContent = `#${item.rank}`;
+
       desc.append(rank, document.createTextNode(', '));
       appendPlacementDescription(desc, item.placementText);
+    } else if (item.type === 'removed') {
+      desc.textContent =
+        `${item.title} was removed from the Challenge List by unanimous decision`;
     } else if (item.type === 'victor') {
       desc.append(document.createTextNode('Congratulations to '));
+
       const username = document.createElement('strong');
       username.textContent = item.username;
+
       const title = document.createElement('strong');
       title.textContent = item.title;
-      desc.append(username, document.createTextNode(' for beating '), title, document.createTextNode(' today! Huge GGS!'));
+
+      desc.append(
+        username,
+        document.createTextNode(' for beating '),
+        title,
+        document.createTextNode(' today! Huge GGS!')
+      );
     }
 
     itemEl.append(top, desc);
